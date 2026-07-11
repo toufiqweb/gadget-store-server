@@ -115,25 +115,44 @@ async function run() {
           const skip = (page - 1) * limit;
           const search = req.query.search as string;
           const category = req.query.category as string;
+          const brands = req.query.brands as string;
+          const minPrice = req.query.minPrice;
+          const maxPrice = req.query.maxPrice;
           const sort = req.query.sort as string;
 
           // Build query object
           const query: any = {};
+          
           if (search) {
             query.$or = [
               { title: { $regex: search, $options: 'i' } },
               { brand: { $regex: search, $options: 'i' } }
             ];
           }
+          
           if (category) {
             query.category = category;
           }
 
+          if (brands) {
+            const brandArray = brands.split(',').map(b => b.trim());
+            query.brand = { $in: brandArray };
+          }
+
+          if (minPrice || maxPrice) {
+            query.price = {};
+            if (minPrice) query.price.$gte = Number(minPrice);
+            if (maxPrice) query.price.$lte = Number(maxPrice);
+          }
+
           // Build sort object
-          let sortOption: any = { createdAt: -1 };
-          if (sort === 'price-asc') sortOption = { price: 1 };
-          if (sort === 'price-desc') sortOption = { price: -1 };
-          if (sort === 'rating') sortOption = { rating: -1 };
+          let sortOption: any = { createdAt: -1 }; // newest by default
+          if (sort === 'newest') sortOption = { createdAt: -1 };
+          if (sort === 'oldest') sortOption = { createdAt: 1 };
+          if (sort === 'price_asc' || sort === 'price-asc') sortOption = { price: 1 };
+          if (sort === 'price_desc' || sort === 'price-desc') sortOption = { price: -1 };
+          if (sort === 'rating_asc') sortOption = { rating: 1 };
+          if (sort === 'rating_desc' || sort === 'rating') sortOption = { rating: -1 };
 
           // Fetch data
           const total = await productsCollection.countDocuments(query);
