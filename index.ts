@@ -1,6 +1,6 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
-import { MongoClient, ServerApiVersion } from 'mongodb';
+import { MongoClient, ServerApiVersion, ObjectId } from 'mongodb';
 import dotenv from 'dotenv';
 import { jwtVerify, createRemoteJWKSet } from 'jose-cjs';
 import { NextFunction } from 'express';
@@ -104,6 +104,80 @@ async function run() {
         } catch (error) {
           console.error("Error creating product:", error);
           res.status(500).json({ success: false, message: "Failed to create product" });
+        }
+      });
+
+      app.get('/api/products', async (req: Request, res: Response) => {
+        try {
+          // Parse basic query parameters for pagination and filtering
+          const page = parseInt(req.query.page as string) || 1;
+          const limit = parseInt(req.query.limit as string) || 10;
+          const skip = (page - 1) * limit;
+          const search = req.query.search as string;
+          const category = req.query.category as string;
+          const sort = req.query.sort as string;
+
+          // Build query object
+          const query: any = {};
+          if (search) {
+            query.$or = [
+              { title: { $regex: search, $options: 'i' } },
+              { brand: { $regex: search, $options: 'i' } }
+            ];
+          }
+          if (category) {
+            query.category = category;
+          }
+
+          // Build sort object
+          let sortOption: any = { createdAt: -1 };
+          if (sort === 'price-asc') sortOption = { price: 1 };
+          if (sort === 'price-desc') sortOption = { price: -1 };
+          if (sort === 'rating') sortOption = { rating: -1 };
+
+          // Fetch data
+          const total = await productsCollection.countDocuments(query);
+          const products = await productsCollection
+            .find(query)
+            .sort(sortOption)
+            .skip(skip)
+            .limit(limit)
+            .toArray();
+
+          res.status(200).json({
+            success: true,
+            data: products,
+            meta: {
+              total,
+              page,
+              limit,
+              totalPages: Math.ceil(total / limit)
+            }
+          });
+        } catch (error) {
+          console.error("Error fetching products:", error);
+          res.status(500).json({ success: false, message: "Failed to fetch products" });
+        }
+      });
+
+      app.get('/api/products/:id', async (req: Request, res: Response) => {
+        try {
+          const id = req.params.id;
+          
+          if (!ObjectId.isValid(id)) {
+            return res.status(400).json({ success: false, message: "Invalid product ID format" });
+          }
+
+          const product = await productsCollection.findOne({ _id: new ObjectId(id) });
+          
+          if (!product) {
+            return res.status(404).json({ success: false, message: "Product not found" });
+          }
+
+          res.status(200).json({ success: true, data: product });
+        } catch (error) {
+          console.error("Error fetching product by ID:", error);
+          res.status(500).json({ success: false, message: "Failed to fetch product" });
         }
       });
     }
