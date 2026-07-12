@@ -41,6 +41,13 @@ const verifyToken = async (req: Request, res: Response, next: NextFunction): Pro
   }
 };
 
+const verifyAdmin = (req: Request, res: Response, next: NextFunction): any => {
+  if (req.user?.role !== "admin") {
+    return res.status(403).json({ success: false, message: "Forbidden: Admin access required" });
+  }
+  next();
+};
+
 const app = express();
 const port = process.env.PORT || 5000;
 
@@ -180,6 +187,47 @@ async function run() {
         }
       });
 
+      app.get('/api/admin/products', verifyToken, verifyAdmin, async (req: Request, res: Response) => {
+        try {
+          const page = parseInt(req.query.page as string) || 1;
+          const limit = parseInt(req.query.limit as string) || 10;
+          const skip = (page - 1) * limit;
+          const search = req.query.search as string;
+
+          const query: any = {};
+          
+          if (search) {
+            query.$or = [
+              { title: { $regex: search, $options: 'i' } },
+              { brand: { $regex: search, $options: 'i' } },
+              { category: { $regex: search, $options: 'i' } }
+            ];
+          }
+
+          const total = await productsCollection.countDocuments(query);
+          const products = await productsCollection
+            .find(query)
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(limit)
+            .toArray();
+
+          res.status(200).json({
+            success: true,
+            data: products,
+            meta: {
+              total,
+              page,
+              limit,
+              totalPages: Math.ceil(total / limit)
+            }
+          });
+        } catch (error) {
+          console.error("Error fetching admin products:", error);
+          res.status(500).json({ success: false, message: "Failed to fetch admin products" });
+        }
+      });
+
       app.get('/api/products/user/my-products', verifyToken, async (req: Request, res: Response) => {
         try {
           const userIdentifier = req.user?.id || req.user?.email;
@@ -210,7 +258,7 @@ async function run() {
 
       app.get('/api/products/:id', async (req: Request, res: Response) => {
         try {
-          const id = req.params.id;
+          const id = req.params.id as string;
           
           if (!ObjectId.isValid(id)) {
             return res.status(400).json({ success: false, message: "Invalid product ID format" });
@@ -226,6 +274,86 @@ async function run() {
         } catch (error) {
           console.error("Error fetching product by ID:", error);
           res.status(500).json({ success: false, message: "Failed to fetch product" });
+        }
+      });
+
+      app.patch('/api/products/:id', verifyToken, async (req: Request, res: Response) => {
+        try {
+          const id = req.params.id as string;
+          
+          if (!ObjectId.isValid(id)) {
+            return res.status(400).json({ success: false, message: "Invalid product ID format" });
+          }
+
+          const product = await productsCollection.findOne({ _id: new ObjectId(id) });
+          
+          if (!product) {
+            return res.status(404).json({ success: false, message: "Product not found" });
+          }
+
+          const userIdentifier = req.user?.id || req.user?.email;
+          const isAdmin = req.user?.role === 'admin';
+
+          if (product.userId !== userIdentifier && product.createdBy !== userIdentifier && !isAdmin) {
+            return res.status(403).json({ success: false, message: "Forbidden: You cannot modify this product" });
+          }
+
+          const { title, brand, category, shortDescription, fullDescription, price, rating, stock, thumbnail, images, specifications } = req.body;
+          const updateDoc: any = { $set: {} };
+          
+          if (title !== undefined) updateDoc.$set.title = title;
+          if (brand !== undefined) updateDoc.$set.brand = brand;
+          if (category !== undefined) updateDoc.$set.category = category;
+          if (shortDescription !== undefined) updateDoc.$set.shortDescription = shortDescription;
+          if (fullDescription !== undefined) updateDoc.$set.fullDescription = fullDescription;
+          if (price !== undefined) updateDoc.$set.price = Number(price);
+          if (rating !== undefined) updateDoc.$set.rating = Number(rating);
+          if (stock !== undefined) updateDoc.$set.stock = Number(stock);
+          if (thumbnail !== undefined) updateDoc.$set.thumbnail = thumbnail;
+          if (images !== undefined) updateDoc.$set.images = Array.isArray(images) ? images : [];
+          if (specifications !== undefined) updateDoc.$set.specifications = specifications;
+          
+          updateDoc.$set.updatedAt = new Date();
+
+          const result = await productsCollection.updateOne(
+            { _id: new ObjectId(id) },
+            updateDoc
+          );
+
+          res.status(200).json({ success: true, message: "Product updated successfully", data: result });
+        } catch (error) {
+          console.error("Error updating product:", error);
+          res.status(500).json({ success: false, message: "Failed to update product" });
+        }
+      });
+
+      app.delete('/api/products/:id', verifyToken, async (req: Request, res: Response) => {
+        try {
+          const id = req.params.id as string;
+          
+          if (!ObjectId.isValid(id)) {
+            return res.status(400).json({ success: false, message: "Invalid product ID format" });
+          }
+
+          const product = await productsCollection.findOne({ _id: new ObjectId(id) });
+          
+          if (!product) {
+            return res.status(404).json({ success: false, message: "Product not found" });
+          }
+
+          const userIdentifier = req.user?.id || req.user?.email;
+          const isAdmin = req.user?.role === 'admin';
+
+          if (product.userId !== userIdentifier && product.createdBy !== userIdentifier && !isAdmin) {
+            return res.status(403).json({ success: false, message: "Forbidden: You cannot delete this product" });
+          }
+
+          const result = await productsCollection.deleteOne({ _id: new ObjectId(id) });
+
+          res.status(200).json({ success: true, message: "Product deleted successfully", data: result });
+        } catch (error) {
+          console.error("Error deleting product:", error);
+          res.status(500).json({ success: false, message: "Failed to delete product" });
         }
       });
     }
