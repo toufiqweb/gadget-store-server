@@ -48,10 +48,41 @@ const verifyAdmin = (req: Request, res: Response, next: NextFunction): any => {
   next();
 };
 
+const checkBlocked = async (req: Request, res: Response, next: NextFunction): Promise<any> => {
+  try {
+    const userIdentifier = req.user?.id || req.user?.email;
+    if (!userIdentifier) {
+      return res.status(401).json({ success: false, message: "Unauthorized: Missing user identifier" });
+    }
+    
+    const user = await usersCollection.findOne({
+      $or: [
+        { _id: userIdentifier },
+        { id: userIdentifier },
+        { email: req.user?.email || userIdentifier }
+      ]
+    });
+    
+    if (user && user.status === "blocked") {
+      return res.status(403).json({ success: false, message: "Forbidden: Your account has been blocked and you cannot perform mutations." });
+    }
+    next();
+  } catch (error) {
+    console.error("Error in checkBlocked middleware:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+};
+
 const app = express();
 const port = process.env.PORT || 5000;
 
-app.use(cors());
+app.use(cors({
+  origin: [
+    "http://localhost:3000",
+    clientUrl
+  ],
+  credentials: true,
+}));
 app.use(express.json());
 
 const uri = process.env.MONGODB_URI as string;
@@ -70,6 +101,10 @@ const client = new MongoClient(uri, {
   }
 });
 
+const db = client.db("GadgetsStore");
+const productsCollection = db.collection("products");
+const usersCollection = db.collection("user");
+
 async function run() {
   try {
     // Connect the client to the server
@@ -81,12 +116,156 @@ async function run() {
 
 
 
-    const db = client ? client.db("GadgetsStore") : null;
-
     if (db) {
-      const productsCollection = db.collection("products");
+      // ──────────────────────────────────────────────────────────────
+      // GET /api/admin/stats  — Admin dashboard analytics
+      // ──────────────────────────────────────────────────────────────
+      app.get('/api/admin/stats', verifyToken, verifyAdmin, async (req: Request, res: Response) => {
+        try {
+          const [totalProducts, totalUsers, blockedUsers, adminUsers] = await Promise.all([
+            productsCollection.countDocuments(),
+            usersCollection.countDocuments(),
+            usersCollection.countDocuments({ status: "blocked" }),
+            usersCollection.countDocuments({ role: "admin" }),
+          ]);
 
-      app.post('/api/products', verifyToken, async (req: Request, res: Response) => {
+          // Products by category
+          const categoryAgg = await productsCollection.aggregate([
+            { $group: { _id: "$category", count: { $sum: 1 } } },
+            { $sort: { count: -1 } },
+            { $limit: 8 },
+          ]).toArray();
+
+          // Products added per month (last 6 months)
+          const sixMonthsAgo = new Date();
+          sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+
+          const monthlyProductsAgg = await productsCollection.aggregate([
+            { $match: { createdAt: { $gte: sixMonthsAgo } } },
+            {
+              $group: {
+                _id: {
+                  year: { $year: "$createdAt" },
+                  month: { $month: "$createdAt" },
+                },
+                count: { $sum: 1 },
+              },
+            },
+            { $sort: { "_id.year": 1, "_id.month": 1 } },
+          ]).toArray();
+
+          // Average price by category
+          const avgPriceAgg = await productsCollection.aggregate([
+            { $group: { _id: "$category", avgPrice: { $avg: "$price" } } },
+            { $sort: { avgPrice: -1 } },
+            { $limit: 6 },
+          ]).toArray();
+
+          const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+          const monthlyProducts = monthlyProductsAgg.map((m: any) => ({
+            month: `${monthNames[m._id.month - 1]} ${m._id.year}`,
+            products: m.count,
+          }));
+
+          res.status(200).json({
+            success: true,
+            data: {
+              totalProducts,
+              totalUsers,
+              blockedUsers,
+              adminUsers,
+              activeUsers: totalUsers - blockedUsers,
+              categoryBreakdown: categoryAgg.map((c: any) => ({ name: c._id || "Uncategorized", value: c.count })),
+              monthlyProducts,
+              avgPriceByCategory: avgPriceAgg.map((c: any) => ({
+                name: c._id || "Uncategorized",
+                avgPrice: Math.round(c.avgPrice || 0),
+              })),
+            },
+          });
+        } catch (error) {
+          console.error("Error fetching admin stats:", error);
+          res.status(500).json({ success: false, message: "Failed to fetch admin stats" });
+        }
+      });
+
+      // ──────────────────────────────────────────────────────────────
+      // GET /api/users/stats  — User dashboard analytics
+      // ──────────────────────────────────────────────────────────────
+      app.get('/api/users/stats', verifyToken, async (req: Request, res: Response) => {
+        try {
+          const userIdentifier = req.user?.id || req.user?.email;
+          if (!userIdentifier) {
+            return res.status(401).json({ success: false, message: "Unauthorized" });
+          }
+
+          const userQuery = { $or: [{ createdBy: userIdentifier }, { userId: userIdentifier }] };
+
+          const [totalMyProducts, myProducts] = await Promise.all([
+            productsCollection.countDocuments(userQuery),
+            productsCollection.find(userQuery).sort({ createdAt: -1 }).toArray(),
+          ]);
+
+          // Products by category
+          const myCategoryAgg = await productsCollection.aggregate([
+            { $match: userQuery },
+            { $group: { _id: "$category", count: { $sum: 1 } } },
+          ]).toArray();
+
+          // Products added per month (last 6 months)
+          const sixMonthsAgo = new Date();
+          sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+
+          const myMonthlyAgg = await productsCollection.aggregate([
+            { $match: { ...userQuery, createdAt: { $gte: sixMonthsAgo } } },
+            {
+              $group: {
+                _id: { year: { $year: "$createdAt" }, month: { $month: "$createdAt" } },
+                count: { $sum: 1 },
+              },
+            },
+            { $sort: { "_id.year": 1, "_id.month": 1 } },
+          ]).toArray();
+
+          const totalStockValue = myProducts.reduce((sum: number, p: any) => sum + (Number(p.price) * Number(p.stock || 0)), 0);
+          const avgRating = myProducts.length
+            ? myProducts.reduce((sum: number, p: any) => sum + Number(p.rating || 0), 0) / myProducts.length
+            : 0;
+
+          const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+          const monthlyProducts = myMonthlyAgg.map((m: any) => ({
+            month: `${monthNames[m._id.month - 1]} ${m._id.year}`,
+            products: m.count,
+          }));
+
+          res.status(200).json({
+            success: true,
+            data: {
+              totalMyProducts,
+              totalStockValue: Math.round(totalStockValue),
+              avgRating: parseFloat(avgRating.toFixed(1)),
+              categoryBreakdown: myCategoryAgg.map((c: any) => ({ name: c._id || "Uncategorized", value: c.count })),
+              monthlyProducts,
+              recentProducts: myProducts.slice(0, 5).map((p: any) => ({
+                _id: p._id,
+                title: p.title,
+                category: p.category,
+                price: p.price,
+                stock: p.stock,
+                rating: p.rating,
+                thumbnail: p.thumbnail,
+                createdAt: p.createdAt,
+              })),
+            },
+          });
+        } catch (error) {
+          console.error("Error fetching user stats:", error);
+          res.status(500).json({ success: false, message: "Failed to fetch user stats" });
+        }
+      });
+
+
+      app.post('/api/products', verifyToken, checkBlocked, async (req: Request, res: Response) => {
         try {
           const { title, brand, category, shortDescription, fullDescription, price, rating, stock, thumbnail, images, specifications } = req.body;
           
@@ -277,7 +456,7 @@ async function run() {
         }
       });
 
-      app.patch('/api/products/:id', verifyToken, async (req: Request, res: Response) => {
+      app.patch('/api/products/:id', verifyToken, checkBlocked, async (req: Request, res: Response) => {
         try {
           const id = req.params.id as string;
           
@@ -327,7 +506,7 @@ async function run() {
         }
       });
 
-      app.delete('/api/products/:id', verifyToken, async (req: Request, res: Response) => {
+      app.delete('/api/products/:id', verifyToken, checkBlocked, async (req: Request, res: Response) => {
         try {
           const id = req.params.id as string;
           
@@ -356,6 +535,195 @@ async function run() {
           res.status(500).json({ success: false, message: "Failed to delete product" });
         }
       });
+
+      // GET /api/admin/users
+      app.get('/api/admin/users', verifyToken, verifyAdmin, async (req: Request, res: Response) => {
+        try {
+          const page = parseInt(req.query.page as string) || 1;
+          const limit = parseInt(req.query.limit as string) || 10;
+          const skip = (page - 1) * limit;
+          const search = req.query.search as string;
+
+          const query: any = {};
+          if (search) {
+            query.$or = [
+              { name: { $regex: search, $options: 'i' } },
+              { email: { $regex: search, $options: 'i' } }
+            ];
+          }
+
+          const total = await usersCollection.countDocuments(query);
+          const users = await usersCollection
+            .find(query)
+            .skip(skip)
+            .limit(limit)
+            .toArray();
+
+          res.status(200).json({
+            success: true,
+            data: users,
+            meta: {
+              total,
+              page,
+              limit,
+              totalPages: Math.ceil(total / limit)
+            }
+          });
+        } catch (error) {
+          console.error("Error fetching admin users:", error);
+          res.status(500).json({ success: false, message: "Failed to fetch users" });
+        }
+      });
+
+      // PATCH /api/admin/users/:id/status
+      app.patch('/api/admin/users/:id/status', verifyToken, verifyAdmin, async (req: Request, res: Response) => {
+        try {
+          const id = req.params.id as string;
+          const { status } = req.body;
+
+          if (status !== 'active' && status !== 'blocked') {
+            return res.status(400).json({ success: false, message: "Invalid status value" });
+          }
+
+          let result = await usersCollection.updateOne(
+            { _id: id as any },
+            { $set: { status, updatedAt: new Date() } }
+          );
+
+          if (result.matchedCount === 0 && ObjectId.isValid(id)) {
+            result = await usersCollection.updateOne(
+              { _id: new ObjectId(id) },
+              { $set: { status, updatedAt: new Date() } }
+            );
+          }
+
+          if (result.matchedCount === 0) {
+            return res.status(404).json({ success: false, message: "User not found" });
+          }
+
+          res.status(200).json({ success: true, message: "User status updated successfully" });
+        } catch (error) {
+          console.error("Error updating user status:", error);
+          res.status(500).json({ success: false, message: "Failed to update user status" });
+        }
+      });
+
+      // PATCH /api/admin/users/:id/role
+      app.patch('/api/admin/users/:id/role', verifyToken, verifyAdmin, async (req: Request, res: Response) => {
+        try {
+          const id = req.params.id as string;
+          const { role } = req.body;
+
+          if (role !== 'user' && role !== 'admin') {
+            return res.status(400).json({ success: false, message: "Invalid role value" });
+          }
+
+          const currentUserIdentifier = req.user?.id || req.user?.email;
+          const targetUser = await usersCollection.findOne({
+            $or: [{ _id: id as any }, { _id: (ObjectId.isValid(id) ? new ObjectId(id) : null) as any }]
+          });
+
+          if (targetUser && (targetUser._id === currentUserIdentifier || targetUser.email === req.user?.email) && role === 'user') {
+            return res.status(400).json({ success: false, message: "You cannot change your own admin role" });
+          }
+
+          let result = await usersCollection.updateOne(
+            { _id: id as any },
+            { $set: { role, updatedAt: new Date() } }
+          );
+
+          if (result.matchedCount === 0 && ObjectId.isValid(id)) {
+            result = await usersCollection.updateOne(
+              { _id: new ObjectId(id) },
+              { $set: { role, updatedAt: new Date() } }
+            );
+          }
+
+          if (result.matchedCount === 0) {
+            return res.status(404).json({ success: false, message: "User not found" });
+          }
+
+          res.status(200).json({ success: true, message: "User role updated successfully" });
+        } catch (error) {
+          console.error("Error updating user role:", error);
+          res.status(500).json({ success: false, message: "Failed to update user role" });
+        }
+      });
+
+      // GET /api/users/profile
+      app.get('/api/users/profile', verifyToken, async (req: Request, res: Response) => {
+        try {
+          const userIdentifier = req.user?.id || req.user?.email;
+          if (!userIdentifier) {
+            return res.status(401).json({ success: false, message: "Unauthorized" });
+          }
+
+          const user = await usersCollection.findOne({
+            $or: [
+              { _id: userIdentifier as any },
+              { id: userIdentifier },
+              { email: req.user?.email || userIdentifier }
+            ]
+          });
+
+          if (!user) {
+            return res.status(404).json({ success: false, message: "User not found" });
+          }
+
+          res.status(200).json({ success: true, data: user });
+        } catch (error) {
+          console.error("Error fetching user profile:", error);
+          res.status(500).json({ success: false, message: "Failed to fetch user profile" });
+        }
+      });
+
+      // PATCH /api/users/profile
+      app.patch('/api/users/profile', verifyToken, checkBlocked, async (req: Request, res: Response) => {
+        try {
+          const userIdentifier = req.user?.id || req.user?.email;
+          if (!userIdentifier) {
+            return res.status(401).json({ success: false, message: "Unauthorized" });
+          }
+
+          const { name, image, bio, phoneNumber, location } = req.body;
+
+          const updateDoc: any = { $set: {} };
+          if (name !== undefined) updateDoc.$set.name = name;
+          if (image !== undefined) updateDoc.$set.image = image;
+          if (bio !== undefined) updateDoc.$set.bio = bio;
+          if (phoneNumber !== undefined) updateDoc.$set.phoneNumber = phoneNumber;
+          if (location !== undefined) updateDoc.$set.location = location;
+          updateDoc.$set.updatedAt = new Date();
+
+          let result = await usersCollection.updateOne(
+            { _id: userIdentifier as any },
+            updateDoc
+          );
+
+          if (result.matchedCount === 0) {
+            result = await usersCollection.updateOne(
+              { email: (req.user?.email || userIdentifier) as any },
+              updateDoc
+            );
+          }
+
+          if (result.matchedCount === 0) {
+            return res.status(404).json({ success: false, message: "User profile not found" });
+          }
+
+          const updatedUser = await usersCollection.findOne({
+            $or: [
+              { _id: userIdentifier as any },
+              { email: (req.user?.email || userIdentifier) as any }
+            ]
+          });
+
+          res.status(200).json({ success: true, message: "Profile updated successfully", data: updatedUser });
+        } catch (error) {
+          console.error("Error updating user profile:", error);
+          res.status(500).json({ success: false, message: "Failed to update user profile" });
+        }
+      });
     }
     // Start Express server ONLY after successful DB connection
     app.listen(port, () => {
@@ -372,11 +740,4 @@ run().catch(console.dir);
 
 app.get('/', (req: Request, res: Response) => {
   res.send('Gadget Store API is running and connected to MongoDB');
-});
-
-// Handle graceful shutdown to close the database connection properly
-process.on('SIGINT', async () => {
-  console.log("Closing MongoDB connection...");
-  await client.close();
-  process.exit(0);
 });

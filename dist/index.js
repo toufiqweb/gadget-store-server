@@ -46,6 +46,32 @@ const verifyAdmin = (req, res, next) => {
     }
     next();
 };
+const checkBlocked = (req, res, next) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a, _b, _c;
+    try {
+        const userIdentifier = ((_a = req.user) === null || _a === void 0 ? void 0 : _a.id) || ((_b = req.user) === null || _b === void 0 ? void 0 : _b.email);
+        if (!userIdentifier) {
+            return res.status(401).json({ success: false, message: "Unauthorized: Missing user identifier" });
+        }
+        const db = client.db("GadgetsStore");
+        const usersCollection = db.collection("user");
+        const user = yield usersCollection.findOne({
+            $or: [
+                { _id: userIdentifier },
+                { id: userIdentifier },
+                { email: ((_c = req.user) === null || _c === void 0 ? void 0 : _c.email) || userIdentifier }
+            ]
+        });
+        if (user && user.status === "blocked") {
+            return res.status(403).json({ success: false, message: "Forbidden: Your account has been blocked and you cannot perform mutations." });
+        }
+        next();
+    }
+    catch (error) {
+        console.error("Error in checkBlocked middleware:", error);
+        res.status(500).json({ success: false, message: "Internal server error" });
+    }
+});
 const app = (0, express_1.default)();
 const port = process.env.PORT || 5000;
 app.use((0, cors_1.default)());
@@ -74,7 +100,7 @@ function run() {
             const db = client ? client.db("GadgetsStore") : null;
             if (db) {
                 const productsCollection = db.collection("products");
-                app.post('/api/products', verifyToken, (req, res) => __awaiter(this, void 0, void 0, function* () {
+                app.post('/api/products', verifyToken, checkBlocked, (req, res) => __awaiter(this, void 0, void 0, function* () {
                     var _a, _b, _c, _d;
                     try {
                         const { title, brand, category, shortDescription, fullDescription, price, rating, stock, thumbnail, images, specifications } = req.body;
@@ -253,7 +279,7 @@ function run() {
                         res.status(500).json({ success: false, message: "Failed to fetch product" });
                     }
                 }));
-                app.patch('/api/products/:id', verifyToken, (req, res) => __awaiter(this, void 0, void 0, function* () {
+                app.patch('/api/products/:id', verifyToken, checkBlocked, (req, res) => __awaiter(this, void 0, void 0, function* () {
                     var _a, _b, _c;
                     try {
                         const id = req.params.id;
@@ -302,7 +328,7 @@ function run() {
                         res.status(500).json({ success: false, message: "Failed to update product" });
                     }
                 }));
-                app.delete('/api/products/:id', verifyToken, (req, res) => __awaiter(this, void 0, void 0, function* () {
+                app.delete('/api/products/:id', verifyToken, checkBlocked, (req, res) => __awaiter(this, void 0, void 0, function* () {
                     var _a, _b, _c;
                     try {
                         const id = req.params.id;
@@ -324,6 +350,170 @@ function run() {
                     catch (error) {
                         console.error("Error deleting product:", error);
                         res.status(500).json({ success: false, message: "Failed to delete product" });
+                    }
+                }));
+                // GET /api/admin/users
+                app.get('/api/admin/users', verifyToken, verifyAdmin, (req, res) => __awaiter(this, void 0, void 0, function* () {
+                    try {
+                        const page = parseInt(req.query.page) || 1;
+                        const limit = parseInt(req.query.limit) || 10;
+                        const skip = (page - 1) * limit;
+                        const search = req.query.search;
+                        const db = client.db("GadgetsStore");
+                        const usersCollection = db.collection("user");
+                        const query = {};
+                        if (search) {
+                            query.$or = [
+                                { name: { $regex: search, $options: 'i' } },
+                                { email: { $regex: search, $options: 'i' } }
+                            ];
+                        }
+                        const total = yield usersCollection.countDocuments(query);
+                        const users = yield usersCollection
+                            .find(query)
+                            .skip(skip)
+                            .limit(limit)
+                            .toArray();
+                        res.status(200).json({
+                            success: true,
+                            data: users,
+                            meta: {
+                                total,
+                                page,
+                                limit,
+                                totalPages: Math.ceil(total / limit)
+                            }
+                        });
+                    }
+                    catch (error) {
+                        console.error("Error fetching admin users:", error);
+                        res.status(500).json({ success: false, message: "Failed to fetch users" });
+                    }
+                }));
+                // PATCH /api/admin/users/:id/status
+                app.patch('/api/admin/users/:id/status', verifyToken, verifyAdmin, (req, res) => __awaiter(this, void 0, void 0, function* () {
+                    try {
+                        const id = req.params.id;
+                        const { status } = req.body;
+                        if (status !== 'active' && status !== 'blocked') {
+                            return res.status(400).json({ success: false, message: "Invalid status value" });
+                        }
+                        const db = client.db("GadgetsStore");
+                        const usersCollection = db.collection("user");
+                        let result = yield usersCollection.updateOne({ _id: id }, { $set: { status, updatedAt: new Date() } });
+                        if (result.matchedCount === 0 && mongodb_1.ObjectId.isValid(id)) {
+                            result = yield usersCollection.updateOne({ _id: new mongodb_1.ObjectId(id) }, { $set: { status, updatedAt: new Date() } });
+                        }
+                        if (result.matchedCount === 0) {
+                            return res.status(404).json({ success: false, message: "User not found" });
+                        }
+                        res.status(200).json({ success: true, message: "User status updated successfully" });
+                    }
+                    catch (error) {
+                        console.error("Error updating user status:", error);
+                        res.status(500).json({ success: false, message: "Failed to update user status" });
+                    }
+                }));
+                // PATCH /api/admin/users/:id/role
+                app.patch('/api/admin/users/:id/role', verifyToken, verifyAdmin, (req, res) => __awaiter(this, void 0, void 0, function* () {
+                    var _a, _b, _c;
+                    try {
+                        const id = req.params.id;
+                        const { role } = req.body;
+                        if (role !== 'user' && role !== 'admin') {
+                            return res.status(400).json({ success: false, message: "Invalid role value" });
+                        }
+                        const db = client.db("GadgetsStore");
+                        const usersCollection = db.collection("user");
+                        const currentUserIdentifier = ((_a = req.user) === null || _a === void 0 ? void 0 : _a.id) || ((_b = req.user) === null || _b === void 0 ? void 0 : _b.email);
+                        const targetUser = yield usersCollection.findOne({
+                            $or: [{ _id: id }, { _id: (mongodb_1.ObjectId.isValid(id) ? new mongodb_1.ObjectId(id) : null) }]
+                        });
+                        if (targetUser && (targetUser._id === currentUserIdentifier || targetUser.email === ((_c = req.user) === null || _c === void 0 ? void 0 : _c.email)) && role === 'user') {
+                            return res.status(400).json({ success: false, message: "You cannot change your own admin role" });
+                        }
+                        let result = yield usersCollection.updateOne({ _id: id }, { $set: { role, updatedAt: new Date() } });
+                        if (result.matchedCount === 0 && mongodb_1.ObjectId.isValid(id)) {
+                            result = yield usersCollection.updateOne({ _id: new mongodb_1.ObjectId(id) }, { $set: { role, updatedAt: new Date() } });
+                        }
+                        if (result.matchedCount === 0) {
+                            return res.status(404).json({ success: false, message: "User not found" });
+                        }
+                        res.status(200).json({ success: true, message: "User role updated successfully" });
+                    }
+                    catch (error) {
+                        console.error("Error updating user role:", error);
+                        res.status(500).json({ success: false, message: "Failed to update user role" });
+                    }
+                }));
+                // GET /api/users/profile
+                app.get('/api/users/profile', verifyToken, (req, res) => __awaiter(this, void 0, void 0, function* () {
+                    var _a, _b, _c;
+                    try {
+                        const userIdentifier = ((_a = req.user) === null || _a === void 0 ? void 0 : _a.id) || ((_b = req.user) === null || _b === void 0 ? void 0 : _b.email);
+                        if (!userIdentifier) {
+                            return res.status(401).json({ success: false, message: "Unauthorized" });
+                        }
+                        const db = client.db("GadgetsStore");
+                        const usersCollection = db.collection("user");
+                        const user = yield usersCollection.findOne({
+                            $or: [
+                                { _id: userIdentifier },
+                                { id: userIdentifier },
+                                { email: ((_c = req.user) === null || _c === void 0 ? void 0 : _c.email) || userIdentifier }
+                            ]
+                        });
+                        if (!user) {
+                            return res.status(404).json({ success: false, message: "User not found" });
+                        }
+                        res.status(200).json({ success: true, data: user });
+                    }
+                    catch (error) {
+                        console.error("Error fetching user profile:", error);
+                        res.status(500).json({ success: false, message: "Failed to fetch user profile" });
+                    }
+                }));
+                // PATCH /api/users/profile
+                app.patch('/api/users/profile', verifyToken, checkBlocked, (req, res) => __awaiter(this, void 0, void 0, function* () {
+                    var _a, _b, _c, _d;
+                    try {
+                        const userIdentifier = ((_a = req.user) === null || _a === void 0 ? void 0 : _a.id) || ((_b = req.user) === null || _b === void 0 ? void 0 : _b.email);
+                        if (!userIdentifier) {
+                            return res.status(401).json({ success: false, message: "Unauthorized" });
+                        }
+                        const { name, image, bio, phoneNumber, location } = req.body;
+                        const db = client.db("GadgetsStore");
+                        const usersCollection = db.collection("user");
+                        const updateDoc = { $set: {} };
+                        if (name !== undefined)
+                            updateDoc.$set.name = name;
+                        if (image !== undefined)
+                            updateDoc.$set.image = image;
+                        if (bio !== undefined)
+                            updateDoc.$set.bio = bio;
+                        if (phoneNumber !== undefined)
+                            updateDoc.$set.phoneNumber = phoneNumber;
+                        if (location !== undefined)
+                            updateDoc.$set.location = location;
+                        updateDoc.$set.updatedAt = new Date();
+                        let result = yield usersCollection.updateOne({ _id: userIdentifier }, updateDoc);
+                        if (result.matchedCount === 0) {
+                            result = yield usersCollection.updateOne({ email: (((_c = req.user) === null || _c === void 0 ? void 0 : _c.email) || userIdentifier) }, updateDoc);
+                        }
+                        if (result.matchedCount === 0) {
+                            return res.status(404).json({ success: false, message: "User profile not found" });
+                        }
+                        const updatedUser = yield usersCollection.findOne({
+                            $or: [
+                                { _id: userIdentifier },
+                                { email: (((_d = req.user) === null || _d === void 0 ? void 0 : _d.email) || userIdentifier) }
+                            ]
+                        });
+                        res.status(200).json({ success: true, message: "Profile updated successfully", data: updatedUser });
+                    }
+                    catch (error) {
+                        console.error("Error updating user profile:", error);
+                        res.status(500).json({ success: false, message: "Failed to update user profile" });
                     }
                 }));
             }
