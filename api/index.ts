@@ -105,18 +105,11 @@ const db = client.db("GadgetsStore");
 const productsCollection = db.collection("products");
 const usersCollection = db.collection("user");
 
-async function run() {
-  try {
-    // Connect the client to the server
-    await client.connect();
-    // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
-    console.log("Pinged your deployment. You successfully connected to MongoDB!");
-
-
-
-
-    if (db) {
+// Connect to MongoDB in the background
+client.connect()
+  .then(() => client.db("admin").command({ ping: 1 }))
+  .then(() => console.log("Pinged your deployment. You successfully connected to MongoDB!"))
+  .catch(error => console.error("Failed to connect to MongoDB", error));
       // ──────────────────────────────────────────────────────────────
       // GET /api/admin/stats  — Admin dashboard analytics
       // ──────────────────────────────────────────────────────────────
@@ -724,20 +717,15 @@ async function run() {
           res.status(500).json({ success: false, message: "Failed to update user profile" });
         }
       });
+    // Start Express server if running locally
+    if (process.env.NODE_ENV !== 'production') {
+      app.listen(port, () => {
+        console.log(`Server is running on port ${port}`);
+      });
     }
-    // Start Express server ONLY after successful DB connection
-    app.listen(port, () => {
-      console.log(`Server is running on port ${port}`);
-    });
-  } catch (error) {
-    console.error("Failed to connect to MongoDB", error);
-    process.exit(1);
-  }
-  // We do NOT use finally { client.close() } here because we want the connection 
-  // to stay open for the Express server to use.
-}
-run().catch(console.dir);
 
 app.get('/', (req: Request, res: Response) => {
   res.send('Gadget Store API is running and connected to MongoDB');
 });
+
+export default app;
