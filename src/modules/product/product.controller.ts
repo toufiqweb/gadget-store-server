@@ -41,6 +41,8 @@ export const getProducts = async (req: Request, res: Response): Promise<any> => 
     const brands = req.query.brands as string;
     const minPrice = req.query.minPrice;
     const maxPrice = req.query.maxPrice;
+    const rating = req.query.rating;
+    const inStock = req.query.inStock;
     const sort = req.query.sort as string;
 
     const query: any = {};
@@ -67,6 +69,14 @@ export const getProducts = async (req: Request, res: Response): Promise<any> => 
       if (maxPrice) query.price.$lte = Number(maxPrice);
     }
 
+    if (rating) {
+      query.rating = { $gte: Number(rating) };
+    }
+
+    if (inStock === 'true') {
+      query.stock = { $gt: 0 };
+    }
+
     let sortOption: any = { createdAt: -1 };
     if (sort === 'newest') sortOption = { createdAt: -1 };
     if (sort === 'oldest') sortOption = { createdAt: 1 };
@@ -74,6 +84,8 @@ export const getProducts = async (req: Request, res: Response): Promise<any> => 
     if (sort === 'price_desc' || sort === 'price-desc') sortOption = { price: -1 };
     if (sort === 'rating_asc') sortOption = { rating: 1 };
     if (sort === 'rating_desc' || sort === 'rating') sortOption = { rating: -1 };
+    if (sort === 'name_asc') sortOption = { title: 1 };
+    if (sort === 'name_desc') sortOption = { title: -1 };
 
     const { total, products } = await ProductService.getProducts(query, sortOption, skip, limit);
 

@@ -84,6 +84,8 @@ const getProducts = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
         const brands = req.query.brands;
         const minPrice = req.query.minPrice;
         const maxPrice = req.query.maxPrice;
+        const rating = req.query.rating;
+        const inStock = req.query.inStock;
         const sort = req.query.sort;
         const query = {};
         if (search) {
@@ -106,6 +108,12 @@ const getProducts = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
             if (maxPrice)
                 query.price.$lte = Number(maxPrice);
         }
+        if (rating) {
+            query.rating = { $gte: Number(rating) };
+        }
+        if (inStock === 'true') {
+            query.stock = { $gt: 0 };
+        }
         let sortOption = { createdAt: -1 };
         if (sort === 'newest')
             sortOption = { createdAt: -1 };
@@ -119,6 +127,10 @@ const getProducts = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
             sortOption = { rating: 1 };
         if (sort === 'rating_desc' || sort === 'rating')
             sortOption = { rating: -1 };
+        if (sort === 'name_asc')
+            sortOption = { title: 1 };
+        if (sort === 'name_desc')
+            sortOption = { title: -1 };
         const { total, products } = yield ProductService.getProducts(query, sortOption, skip, limit);
         res.status(200).json({
             success: true,
