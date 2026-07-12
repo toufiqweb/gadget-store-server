@@ -96,6 +96,7 @@ async function run() {
             images: Array.isArray(images) ? images : [],
             specifications,
             createdBy: req.user?.id || req.user?.email, // From verifyToken payload
+            userId: req.user?.id || req.user?.email, // Explicitly match user request
             createdAt: new Date()
           };
 
@@ -176,6 +177,34 @@ async function run() {
         } catch (error) {
           console.error("Error fetching products:", error);
           res.status(500).json({ success: false, message: "Failed to fetch products" });
+        }
+      });
+
+      app.get('/api/products/user/my-products', verifyToken, async (req: Request, res: Response) => {
+        try {
+          const userIdentifier = req.user?.id || req.user?.email;
+          
+          if (!userIdentifier) {
+            return res.status(401).json({ success: false, message: "Unauthorized: Missing user identifier" });
+          }
+
+          // Find products where createdBy or userId matches the current user
+          const query = {
+            $or: [
+              { createdBy: userIdentifier },
+              { userId: userIdentifier }
+            ]
+          };
+
+          const products = await productsCollection.find(query).sort({ createdAt: -1 }).toArray();
+
+          res.status(200).json({
+            success: true,
+            data: products
+          });
+        } catch (error) {
+          console.error("Error fetching my products:", error);
+          res.status(500).json({ success: false, message: "Failed to fetch user products" });
         }
       });
 
